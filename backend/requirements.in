@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+asyncpg
+greenlet
+pydantic[email]
+python-dotenv
+bcrypt
+PyJWT
+alembic
+python-multipart

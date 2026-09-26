@@ -1,0 +1,56 @@
+name: Verify CoffeeNchat
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: coffeenchat_test
+        ports: ['5432:5432']
+        options: --health-cmd='pg_isready -U test -d coffeenchat_test' --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      SQLALCHEMY_DATABASE_URL: postgresql://test:test@127.0.0.1:5432/coffeenchat_test
+      TEST_DATABASE_URL: postgresql://test:test@127.0.0.1:5432/coffeenchat_test
+      TEST_POSTGRES_ADMIN_URL: postgresql://test:test@127.0.0.1:5432/postgres
+      JWT_SECRET_KEY: ci-only-key-never-use-in-production-12345
+      COFFEENCHAT_TEST_URL: http://127.0.0.1:8000
+      COFFEENCHAT_SECOND_URL: http://127.0.0.1:8001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: pip install -r backend/requirements-dev.txt
+      - run: npm ci --prefix frontend
+      - run: ruff check backend --select F && ruff format --check backend
+      - run: npm --prefix frontend run lint && npm --prefix frontend run build
+      - run: python backend/manage.py migrate
+      - name: Start test deployment
+        run: |
+          (cd backend && uvicorn main:app --port 8000 --ws-max-size 65536 > /tmp/coffeenchat-8000.log 2>&1) &
+          (cd backend && uvicorn main:app --port 8001 --ws-max-size 65536 > /tmp/coffeenchat-8001.log 2>&1) &
+          (cd frontend && npm run dev > /tmp/coffeenchat-vite.log 2>&1) &
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:8000/ready && curl -fsS http://127.0.0.1:8001/ready && curl -fsS http://127.0.0.1:5173/ > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - run: python -m unittest discover -s tests -v
+        working-directory: backend
+      - run: npx playwright install --with-deps chromium && npx playwright test
+        working-directory: frontend
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-results
+          path: frontend/test-results
+          retention-days: 7
